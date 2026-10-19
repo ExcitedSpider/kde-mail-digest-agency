@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+# Digests and the seen-ID state contain real mail. They live outside the repo by
+# default; this is a guard in case anyone runs the tools from a checkout.
+*.md.digest
+mail-digest/
+seen.json

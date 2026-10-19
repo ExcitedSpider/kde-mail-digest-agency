@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Mail Digest
+GenericName=Inbox triage
+Comment=Summarise recent email and list what needs action
+Exec=@PYTHON@ @BINDIR@/mail-digest-qt.py
+Icon=mail-mark-important
+Terminal=false
+Categories=Network;Email;
+Keywords=mail;email;inbox;digest;triage;summary;summarise;todo;
+StartupNotify=true
