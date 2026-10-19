@@ -147,3 +147,7 @@ contains no mail — but note that a digest, by design, summarises it, so treat
   judged on their subject alone.
 - The commitment window is 14 days, so something further out drops off the digest
   until it approaches.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
