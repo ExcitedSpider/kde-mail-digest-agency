@@ -34,16 +34,16 @@ The cost is that a digest reflects your last sync, not the live server.
 
 ## What it does
 
-1. **`mail-extract.py`** walks every `INBOX` under the profile's mail stores,
+1. **`extract.py`** walks every `INBOX` under the profile's mail stores,
    reads the tail of each mbox, and emits recent non-bulk messages as JSON. It
    strips click-tracking URLs, invisible preheader padding and signed card
    payloads, which otherwise consume the whole text budget before any content.
 2. It attaches deterministic flags — `deadline`, `ephemeral`, `automated-sender`,
    `routine-subject` — from a keyword pass.
-3. **`mail-digest.py`** sends that to Claude with a prompt that must account for
+3. **`triage.py`** sends that to Claude with a prompt that must account for
    every `deadline`-flagged message: list it, or dismiss it in the Noise line
    *with a reason*. Without that floor, items silently vanish between runs.
-4. **`mail-digest-qt.py`** shows progress by streaming the model's output, so the
+4. **`qtui.py`** shows progress by streaming the model's output, so the
    window names the section being written rather than counting seconds.
 
 Messages already reported are remembered, so repeat runs surface what is new
@@ -54,6 +54,21 @@ while dated commitments keep reappearing until they pass.
 There is no timer and no cron. A laptop that sleeps and loses connectivity runs
 scheduled jobs at the wrong times or not at all, and silently. You trigger this
 when you are at the machine and online.
+
+## Layout
+
+```
+mail_digest/
+  extract.py    mbox stores -> structured messages (importable and standalone)
+  fallback.py   keyword-only digest, for offline or a failed triage
+  triage.py     lock, extract, ask Claude, write the digest
+  qtui.py       the progress window
+install.py      copies the package, writes launchers and the desktop entry
+```
+
+`triage.py` imports its siblings rather than shelling out to them. The one
+remaining child process is the Qt window's: it runs the triage as a subprocess
+so that cancelling can kill an in-flight `claude` call.
 
 ## Requirements
 
@@ -73,16 +88,29 @@ cd kde-mail-digest-agency
 ./install.py
 ```
 
-Scripts go to `~/.local/bin`, the desktop entry to
-`~/.local/share/applications`. `./install.py --uninstall` removes both and leaves
-your digests alone.
+The package goes to `~/.local/share/mail-digest`, two launchers (`mail-digest`
+and `mail-digest-gui`) to `~/.local/bin`, and the desktop entry to
+`~/.local/share/applications`. `./install.py --uninstall` removes all three and
+leaves your digests alone.
+
+It copies rather than using pip, because distributions increasingly mark the
+system interpreter as externally managed (PEP 668), where `pip install --user`
+fails without override flags.
 
 ## Use
 
 Launch *Mail Digest* from KRunner, or run it headless:
 
 ```bash
-python3 ~/.local/bin/mail-digest.py        # writes ~/mail-digest/YYYY-MM-DD.md
+mail-digest                      # writes ~/mail-digest/YYYY-MM-DD.md
+mail-digest-gui                  # the same, behind the progress window
+```
+
+Each module also runs standalone, which is useful when adjusting the extractor:
+
+```bash
+python3 -m mail_digest.extract --days 10            # JSON on stdout
+python3 -m mail_digest.extract | python3 -m mail_digest.fallback
 ```
 
 | Variable | Effect |
@@ -98,8 +126,8 @@ message as new again.
 
 ## Tuning
 
-- **Window**: `WINDOW_DAYS` in `mail-digest.py`.
-- **What counts as a deadline**: the `DEADLINE` regex in `mail-extract.py`. This
+- **Window**: `WINDOW_DAYS` in `mail_digest/triage.py`.
+- **What counts as a deadline**: the `DEADLINE` regex in `mail_digest/extract.py`. This
   is the honest lever for a digest that is too long — widening the prompt's
   wording tends to make inclusion drift between runs instead.
 - **What the digest contains**: the `PROMPT` constant. The sections, the recall

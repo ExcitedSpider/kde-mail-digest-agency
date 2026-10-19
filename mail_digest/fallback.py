@@ -6,8 +6,8 @@ keyword flags and grouping -- enough to see whether anything looks urgent.
 """
 import json, sys, collections
 
-def main():
-    data = json.load(sys.stdin)
+def render(data):
+    """Return a markdown digest built from flags alone. No model involved."""
     msgs = data["messages"]
     flagged, people, rest = [], [], []
     for m in msgs:
@@ -45,7 +45,11 @@ def main():
                    + ", ".join(f"{n} in {a}" for a, n in by_account.most_common()) + "\n")
         for m in rest[-15:]:
             out.append(f'- {m["date"]} — {m["subject"][:90]}')
-    print("\n".join(out))
+    return "\n".join(out) + "\n"
+
+
+def main():
+    print(render(json.load(sys.stdin)), end="")
 
 
 if __name__ == "__main__":

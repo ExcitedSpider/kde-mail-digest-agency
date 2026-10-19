@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Extract recent, non-bulk messages from a Thunderbird offline mail store.
 
-Reads mbox files directly (read-only; safe while Thunderbird is running) and
-emits compact JSON on stdout. Knows nothing about Claude -- the triage step
-consumes its output. Portable to any host with a Thunderbird/mbox store.
+Reads mbox files directly: read-only, and safe while Thunderbird is running.
+Knows nothing about Claude, so it is useful on its own and portable to any host
+with a Thunderbird/mbox store.
+
+    from mail_digest import extract
+    data = extract.collect(days=10, state=path)      # as a library
+    python -m mail_digest.extract --days 10          # as a command, emitting JSON
 """
 import argparse, configparser, email, email.header, email.utils, datetime, json
 import html, os, re, sys
@@ -173,36 +177,28 @@ def flags_for(sender, subject, body):
     return found
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--days", type=int, default=7, help="look-back window")
-    ap.add_argument("--tail-mib", type=int, default=DEFAULT_TAIL,
-                    help="bytes read from the end of each mbox")
-    ap.add_argument("--profile", help="override profile directory")
-    ap.add_argument("--state", help="JSON file of already-reported Message-IDs")
-    ap.add_argument("--include-bulk", action="store_true",
-                    help="keep List-Id/List-Unsubscribe mail (dropped by default)")
-    args = ap.parse_args()
-
-    profile = find_profile(args.profile)
+def collect(days=7, tail_mib=DEFAULT_TAIL, profile=None, state=None,
+            include_bulk=False):
+    """Gather recent messages. Returns the structure the digest is built from."""
+    profile = find_profile(profile)
     inboxes = find_inboxes(profile)
     if not inboxes:
-        sys.exit(f"no INBOX mbox files under {profile}")
+        raise FileNotFoundError(f"no INBOX mbox files under {profile}")
 
     seen = set()
-    if args.state and os.path.exists(args.state):
+    if state and os.path.exists(state):
         try:
-            seen = set(json.load(open(args.state)).get("message_ids", []))
-        except Exception:
+            seen = set(json.load(open(state)).get("message_ids", []))
+        except (OSError, ValueError):
             seen = set()
 
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=args.days)
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
     parser = BytesParser()
     messages = []
 
     for path in inboxes:
         tag = account_tag(path, profile)
-        for raw in iter_messages(path, args.tail_mib * 1024 * 1024):
+        for raw in iter_messages(path, tail_mib * 1024 * 1024):
             try:
                 msg = parser.parsebytes(raw)
             except Exception:
@@ -221,7 +217,7 @@ def main():
             if when < cutoff:
                 continue
             bulk = bool(msg.get("List-Id") or msg.get("List-Unsubscribe"))
-            if bulk and not args.include_bulk:
+            if bulk and not include_bulk:
                 continue
             mid = (msg.get("Message-ID") or "").strip() or f"{tag}:{raw_date}:{msg.get('Subject')}"
             sender = decode_header(msg.get("From"))[:120]
@@ -244,15 +240,30 @@ def main():
     for m in messages:
         m.pop("ts")
 
-    json.dump({
+    return {
         "generated": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "today": datetime.date.today().isoformat(),
         "profile": profile,
         "accounts": sorted({m["account"] for m in messages}),
-        "window_days": args.days,
+        "window_days": days,
         "counts": {"total": len(messages), "new": sum(1 for m in messages if m["new"])},
         "messages": messages,
-    }, sys.stdout, indent=1, ensure_ascii=False)
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--days", type=int, default=7, help="look-back window")
+    ap.add_argument("--tail-mib", type=int, default=DEFAULT_TAIL,
+                    help="bytes read from the end of each mbox")
+    ap.add_argument("--profile", help="override profile directory")
+    ap.add_argument("--state", help="JSON file of already-reported Message-IDs")
+    ap.add_argument("--include-bulk", action="store_true",
+                    help="keep List-Id/List-Unsubscribe mail (dropped by default)")
+    args = ap.parse_args()
+    json.dump(collect(days=args.days, tail_mib=args.tail_mib, profile=args.profile,
+                      state=args.state, include_bulk=args.include_bulk),
+              sys.stdout, indent=1, ensure_ascii=False)
 
 
 if __name__ == "__main__":

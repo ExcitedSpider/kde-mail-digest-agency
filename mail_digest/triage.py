@@ -5,12 +5,13 @@ Runs headless from a terminal or under mail-digest-qt.py, which reads the
 ::stage:: lines this emits on stdout. Exit codes: 0 success (including the
 offline fallback), 75 another run holds the lock, 1 a real failure.
 """
-import argparse, fcntl, json, os, re, shutil, socket, subprocess, sys, tempfile
+import argparse, fcntl, json, os, re, socket, subprocess, sys
 import datetime as dt
 from pathlib import Path
 
+from . import extract, fallback
+
 HOME = Path.home()
-BIN = HOME / ".local/bin"
 OUT = HOME / "mail-digest"
 STATE_DIR = HOME / ".local/state/mail-digest"
 STATE = STATE_DIR / "seen.json"
@@ -142,14 +143,19 @@ def human(n):
     return f"{n/1000:.1f}k" if n >= 1000 else str(n)
 
 
-def triage(payload, total):
+def payload(data):
+    """The JSON the model sees. Kept separate so a failure can be saved as-is."""
+    return json.dumps(data, indent=1, ensure_ascii=False)
+
+
+def ask_claude(body_json, total):
     """Stream the model's answer, reporting the section being written."""
     import time
     cmd = ["claude", "-p", PROMPT, "--model", MODEL,
            "--output-format", "stream-json", "--include-partial-messages", "--verbose"]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True)
-    proc.stdin.write(payload)
+    proc.stdin.write(body_json)
     proc.stdin.close()
 
     chunks, final, section, last_emit = [], None, None, 0.0
@@ -199,11 +205,6 @@ def triage(payload, total):
     return body.rstrip() + "\n"
 
 
-def run_script(name, *args, stdin=None):
-    return subprocess.run([sys.executable, str(BIN / name), *args],
-                          input=stdin, capture_output=True, text=True, check=True).stdout
-
-
 def write_digest(path, today, new, total, body):
     header = f"# Mail digest — {today}\n\n*{new} new of {total} messages, {WINDOW_DAYS}-day window*\n\n"
     path.write_text(header + body)
@@ -235,8 +236,7 @@ def main():
     digest = OUT / f"{today}.md"
 
     stage(1, "Reading your mailboxes…")
-    raw = run_script("mail-extract.py", "--days", str(args.days), "--state", str(STATE))
-    data = json.loads(raw)
+    data = extract.collect(days=args.days, state=str(STATE))
     total, new = data["counts"]["total"], data["counts"]["new"]
     log(f"extracted total={total} new={new}")
 
@@ -250,20 +250,20 @@ def main():
     stage(2, f"Found {new} new of {total} messages — checking connection…")
     if not online():
         log("offline: using rules-only fallback")
-        write_digest(digest, today, new, total, run_script("mail-fallback.py", stdin=raw))
+        write_digest(digest, today, new, total, fallback.render(data))
         notify("Mail triage: offline", f"{new} new — keyword digest only, no network")
         return 0
 
     stage(STREAM_STAGE, f"Asking Claude to prioritise {total} messages…")
     try:
-        body = triage(raw, total)
+        body = ask_claude(payload(data), total)
     except (RuntimeError, TimeoutError, OSError) as exc:
         log(f"triage failed: {exc}; falling back to rules")
-        shutil.copy(  # keep the input for inspection
-            _spill(raw), OUT / f"{today}-extract.json")
-        fallback = run_script("mail-fallback.py", stdin=raw)
+        # Keep the input that produced the failure, for inspection.
+        (OUT / f"{today}-extract.json").write_text(payload(data))
         write_digest(digest, today, new, total,
-                     f"> **Triage step failed** — rules-only digest below. Log: `{LOG}`\n\n{fallback}")
+                     f"> **Triage step failed** — rules-only digest below. Log: `{LOG}`\n\n"
+                     + fallback.render(data))
         notify("Mail triage degraded", f"Claude step failed — keyword digest only, see {LOG}", True)
         return 0
 
@@ -276,13 +276,6 @@ def main():
     notify(f"Mail triage: {new} new", headline[:110])
     log("run end")
     return 0
-
-
-def _spill(text):
-    fh = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-    fh.write(text)
-    fh.close()
-    return fh.name
 
 
 if __name__ == "__main__":

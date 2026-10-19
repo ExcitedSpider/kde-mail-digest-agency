@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Qt front end for the mail digest: a progress window with honest states.
 
-Runs mail-digest.py, reads its ::stage:: lines straight off the pipe, and shows
-what the triage is doing. Replaces the kdialog/D-Bus front end, which exposed no
-way to set a window size.
+Runs the triage as a child process and reads its ::stage:: lines off the pipe.
+A subprocess rather than a thread, deliberately: cancelling must kill an
+in-flight `claude` call, and a process tree is the honest way to do that.
+
+    python -m mail_digest.qtui
 """
 import os, re, signal, subprocess, sys
 from pathlib import Path
@@ -13,7 +15,7 @@ from PyQt6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QLabel,
                              QMessageBox, QProgressBar, QVBoxLayout)
 
 HOME = Path.home()
-BIN = HOME / ".local/bin"
+PACKAGE_PARENT = Path(__file__).resolve().parent.parent
 DIGEST = HOME / "mail-digest/latest.md"
 LOG = HOME / ".local/state/mail-digest/run.log"
 STAGE = re.compile(r"^::stage::(\d+)::(.*)$")
@@ -53,13 +55,17 @@ class Progress(QDialog):
         env = QProcessEnvironment.systemEnvironment()
         env.insert("MAIL_DIGEST_PROGRESS", "1")
         env.insert("MAIL_DIGEST_NOTIFY", "0")
+        # The child runs `python -m mail_digest`, so it needs the package on its
+        # path wherever this was installed to.
+        env.insert("PYTHONPATH", os.pathsep.join(
+            filter(None, [str(PACKAGE_PARENT), os.environ.get("PYTHONPATH", "")])))
 
         self.proc = QProcess(self)
         self.proc.setProcessEnvironment(env)
         self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         self.proc.readyReadStandardOutput.connect(self.on_output)
         self.proc.finished.connect(self.on_finished)
-        self.proc.start(sys.executable, [str(BIN / "mail-digest.py")])
+        self.proc.start(sys.executable, ["-m", "mail_digest"])
 
         self.ticker = QTimer(self)
         self.ticker.timeout.connect(self.tick)
